@@ -362,13 +362,13 @@ If you open a PR, include:
 
 ## License
 
-Choose the license that fits your goals.
+## License
 
-A common default is:
+This project is licensed under the MIT License.
 
-- MIT License
+MIT is a permissive license that allows broad reuse, modification, distribution, and private or commercial use with minimal friction, as long as the original copyright and license notice are included.
 
-If you want broad reuse with minimal friction, MIT is a strong choice.
+See the [LICENSE](LICENSE) file for details.
 
 ---
 
