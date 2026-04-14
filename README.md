@@ -362,8 +362,6 @@ If you open a PR, include:
 
 ## License
 
-## License
-
 This project is licensed under the MIT License.
 
 MIT is a permissive license that allows broad reuse, modification, distribution, and private or commercial use with minimal friction, as long as the original copyright and license notice are included.
