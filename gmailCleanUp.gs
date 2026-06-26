@@ -1,6 +1,5 @@
 // ================================
 // Gmail Cleanup Automation
-// Generic / Repo-Friendly Version
 // ================================
 //
 // Behavior summary:
@@ -17,79 +16,209 @@
 // 5. Optionally report labels found that are not associated with any rule.
 // 6. Optionally report inbox counts by Gmail category for threads with no user label.
 // 7. Safely skip unreadable label objects instead of failing the run.
-// 8. Support verbose logging and smaller move batches to avoid timeouts.
 //
 // Recommended trigger: daily
 // ================================
 
 // --- Configuration ---
+// Runtime values are loaded from Apps Script Project Settings > Script properties.
+// Preferred: set one CONFIG_JSON Script Property with the JSON config contents.
+// Individual Script Properties can also override values by key.
 
-const CONFIG = {
-  // Labels whose threads should be moved to Trash after DELETE_THRESHOLD_DAYS
-  // unless the thread contains a starred message.
-  LABELS_TO_DELETE: [
-    "webads",
-    "subscriptions",
-    "promotions",
-    "notifications",
-    "customer service",
-    "orders",
-    "travel",
-    "financial",
-    "medical",
-    "jobs"
-  ],
-
-  // Threads with labels in LABELS_TO_DELETE older than this many days
-  // will be moved to Trash unless starred.
+const CONFIG_DEFAULTS = {
+  LABELS_TO_DELETE: [],
   DELETE_THRESHOLD_DAYS: 2,
-
-  // Invite threads with no unread messages older than this many days
-  // will be moved to Trash unless starred.
   INVITE_READ_DELETE_DAYS: 2,
-
-  // Inbox threads older than this many days will be archived unless they
-  // are starred, contain invite attachments, or have a protected label.
   ARCHIVE_THRESHOLD_DAYS: 10,
-
-  // Number of candidate threads to process per loop.
   BATCH_SIZE: 100,
-
-  // Number of threads to move per actual Gmail move operation.
-  // Lower this if you hit Apps Script execution-time limits.
   MOVE_BATCH_SIZE: 20,
-
-  // One or more addresses to receive the HTML report.
-  REPORT_RECIPIENT_EMAILS: [
-    "you@example.com"
-  ],
-
-  // Labels that prevent Inbox threads from being archived.
-  ARCHIVE_IGNORE_LABELS: [
-    "personal",
-    "important",
-    "vip"
-  ],
-
-  // Attachment extensions treated as calendar invites.
+  REPORT_RECIPIENT_EMAILS: [],
+  ARCHIVE_IGNORE_LABELS: [],
   INVITE_EXTENSIONS: [".ics", ".vcs"],
-
-  // Set to true to test the script without making any Gmail changes.
   DRY_RUN: true,
-
-  // Set true to enable detailed progress and timing logs.
   VERBOSE_LOGS: false,
-
-  // Set false to skip the heavier audit/reporting checks during daily runs.
-  ENABLE_AUDIT: true,
-
-  // Optional project footer shown in the HTML report.
+  ENABLE_AUDIT: false,
+  NO_USER_LABEL_COUNT_MODE: "estimate",
+  NO_USER_LABEL_QUERY: "has:nouserlabels",
+  NO_USER_LABEL_FALLBACK_MAX_THREADS: 500,
+  NO_USER_LABEL_FALLBACK_COUNT_EMAILS: false,
   PROJECT_NAME: "Gmail Cleanup Automation",
-  PROJECT_VERSION: "Generic",
-  PROJECT_COPYRIGHT: "&copy; 2026 YourName",
-  PROJECT_REPO_URL: "https://github.com/yourusername/gmailCleanUp",
-  PROJECT_REPO_TEXT: "Project Repository"
+  PROJECT_VERSION: "0.3.0",
+  PROJECT_COPYRIGHT: "",
+  PROJECT_REPO_URL: "",
+  PROJECT_REPO_TEXT: "Project Repository",
+  REPORT_SUBJECT_PREFIX: "Gmail Cleanup Report",
 };
+
+const CONFIG_TYPES = {
+  arrays: [
+    "LABELS_TO_DELETE",
+    "REPORT_RECIPIENT_EMAILS",
+    "ARCHIVE_IGNORE_LABELS",
+    "INVITE_EXTENSIONS",
+  ],
+  numbers: [
+    "DELETE_THRESHOLD_DAYS",
+    "INVITE_READ_DELETE_DAYS",
+    "ARCHIVE_THRESHOLD_DAYS",
+    "BATCH_SIZE",
+    "MOVE_BATCH_SIZE",
+    "NO_USER_LABEL_FALLBACK_MAX_THREADS",
+  ],
+  booleans: [
+    "DRY_RUN",
+    "VERBOSE_LOGS",
+    "ENABLE_AUDIT",
+    "NO_USER_LABEL_FALLBACK_COUNT_EMAILS",
+  ],
+};
+
+const CONFIG = loadConfig();
+
+function loadConfig() {
+  const config = Object.assign({}, CONFIG_DEFAULTS);
+  const properties = getScriptProperties();
+  const jsonConfig = parseConfigJson(properties.CONFIG_JSON);
+
+  applyConfigValues(config, jsonConfig);
+  applyConfigValues(config, properties);
+
+  return config;
+}
+
+function applyConfigValues(config, values) {
+  for (const key of Object.keys(config)) {
+    if (!Object.prototype.hasOwnProperty.call(values, key)) {
+      continue;
+    }
+
+    config[key] = parseConfigValue(key, values[key], config[key]);
+  }
+}
+
+function getScriptProperties() {
+  if (typeof PropertiesService === "undefined") {
+    return {};
+  }
+
+  return PropertiesService.getScriptProperties().getProperties();
+}
+
+function parseConfigJson(rawValue) {
+  if (!rawValue) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch (err) {
+    Logger.log(`[CONFIG] ERROR: Could not parse CONFIG_JSON: ${err.message}`);
+    return {};
+  }
+}
+
+function parseConfigValue(key, rawValue, defaultValue) {
+  if (Array.isArray(rawValue)) {
+    return CONFIG_TYPES.arrays.includes(key)
+      ? rawValue.map((item) => String(item).trim()).filter(Boolean)
+      : rawValue;
+  }
+
+  if (typeof rawValue === "number") {
+    return CONFIG_TYPES.numbers.includes(key) ? rawValue : String(rawValue);
+  }
+
+  if (typeof rawValue === "boolean") {
+    return CONFIG_TYPES.booleans.includes(key) ? rawValue : String(rawValue);
+  }
+
+  if (CONFIG_TYPES.arrays.includes(key)) {
+    return parseConfigList(rawValue);
+  }
+
+  if (CONFIG_TYPES.numbers.includes(key)) {
+    return parseConfigNumber(rawValue, defaultValue);
+  }
+
+  if (CONFIG_TYPES.booleans.includes(key)) {
+    return parseConfigBoolean(rawValue, defaultValue);
+  }
+
+  return String(rawValue);
+}
+
+function parseConfigList(rawValue) {
+  const value = String(rawValue || "").trim();
+
+  if (!value) {
+    return [];
+  }
+
+  if (value.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => String(item).trim()).filter(Boolean);
+      }
+    } catch (err) {
+      Logger.log(`[CONFIG] ERROR: Could not parse JSON list: ${err.message}`);
+    }
+  }
+
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseConfigNumber(rawValue, defaultValue) {
+  const value = Number(rawValue);
+  return Number.isFinite(value) ? value : defaultValue;
+}
+
+function parseConfigBoolean(rawValue, defaultValue) {
+  const value = String(rawValue).trim().toLowerCase();
+
+  if (["true", "yes", "1", "on"].includes(value)) {
+    return true;
+  }
+
+  if (["false", "no", "0", "off"].includes(value)) {
+    return false;
+  }
+
+  return defaultValue;
+}
+
+function validateConfig() {
+  const errors = [];
+  const validNoUserLabelModes = ["estimate", "exact", "fallback"];
+
+  if (!CONFIG.REPORT_RECIPIENT_EMAILS.length) {
+    errors.push("REPORT_RECIPIENT_EMAILS must include at least one email address.");
+  }
+
+  if (!validNoUserLabelModes.includes(CONFIG.NO_USER_LABEL_COUNT_MODE)) {
+    errors.push(
+      `NO_USER_LABEL_COUNT_MODE must be one of: ${validNoUserLabelModes.join(", ")}.`,
+    );
+  }
+
+  if (CONFIG.BATCH_SIZE < 1) {
+    errors.push("BATCH_SIZE must be 1 or greater.");
+  }
+
+  if (CONFIG.MOVE_BATCH_SIZE < 1) {
+    errors.push("MOVE_BATCH_SIZE must be 1 or greater.");
+  }
+
+  if (errors.length) {
+    throw new Error(`Invalid Gmail cleanup configuration: ${errors.join(" ")}`);
+  }
+}
 
 // --- Debug Timing Globals ---
 
@@ -99,6 +228,8 @@ const SOFT_TIMEOUT_MS = 5 * 60 * 1000; // warn around 5 min
 // --- Entry Point ---
 
 function sendReportEmail() {
+  validateConfig();
+
   const overallStart = startTimer("MAIN", "sendReportEmail");
   logVerbose("MAIN", "Starting Gmail Cleanup Automation...");
 
@@ -115,6 +246,10 @@ function sendReportEmail() {
   const archiveStart = startTimer("MAIN", "archiveInbox");
   const archiveReport = archiveInbox();
   endTimer("MAIN", "archiveInbox", archiveStart);
+
+  const noUserLabelStart = startTimer("MAIN", "countNoUserLabelEmails");
+  const noUserLabelReport = countNoUserLabelEmails();
+  endTimer("MAIN", "countNoUserLabelEmails", noUserLabelStart);
 
   let auditReport = getEmptyAuditReport();
 
@@ -135,7 +270,8 @@ function sendReportEmail() {
     inviteReport,
     labelCleanupReport,
     archiveReport,
-    auditReport
+    noUserLabelReport,
+    auditReport,
   });
   endTimer("MAIN", "buildHtmlReport", reportStart);
 
@@ -144,9 +280,9 @@ function sendReportEmail() {
   const emailStart = startTimer("MAIN", `sendEmail to ${recipients}`);
   GmailApp.sendEmail(
     recipients,
-    `${CONFIG.PROJECT_NAME} Report - ${startedAt.toDateString()}`,
+    `${CONFIG.REPORT_SUBJECT_PREFIX} - ${startedAt.toDateString()}`,
     "Your Gmail cleanup report is available in HTML format.",
-    { htmlBody: htmlBody }
+    { htmlBody: htmlBody },
   );
   endTimer("MAIN", `sendEmail to ${recipients}`, emailStart);
 
@@ -165,7 +301,7 @@ function cleanUpInvites() {
     skippedStarred: 0,
     skippedStillActionable: 0,
     failed: 0,
-    processedThreads: 0
+    processedThreads: 0,
   };
 
   const query = `has:attachment filename:(.ics OR .vcs)`;
@@ -182,7 +318,7 @@ function cleanUpInvites() {
     const batch = threads.slice(i, i + CONFIG.BATCH_SIZE);
     const batchStart = startTimer(
       "INVITES",
-      `Batch ${batchNum} (${batch.length} threads)`
+      `Batch ${batchNum} (${batch.length} threads)`,
     );
 
     const threadsToTrash = [];
@@ -196,7 +332,7 @@ function cleanUpInvites() {
           "INVITES",
           j + 1,
           batch.length,
-          `threadId=${thread.getId()} batch=${batchNum}`
+          `threadId=${thread.getId()} batch=${batchNum}`,
         );
         warnIfApproachingTimeout("INVITES");
       }
@@ -209,13 +345,13 @@ function cleanUpInvites() {
 
         const evalStart = startTimer(
           "INVITES",
-          `evaluateInviteThreadForDeletion threadId=${thread.getId()}`
+          `evaluateInviteThreadForDeletion threadId=${thread.getId()}`,
         );
         const decision = evaluateInviteThreadForDeletion(thread);
         endTimer(
           "INVITES",
           `evaluateInviteThreadForDeletion threadId=${thread.getId()}`,
-          evalStart
+          evalStart,
         );
 
         if (decision.deleteThread) {
@@ -233,20 +369,20 @@ function cleanUpInvites() {
         report.failed++;
         logError(
           "INVITES",
-          `threadId=${thread.getId()} message=${err.message}`
+          `threadId=${thread.getId()} message=${err.message}`,
         );
       }
     }
 
     const trashStart = startTimer(
       "INVITES",
-      `moveThreadsToTrash batch=${batchNum} count=${threadsToTrash.length}`
+      `moveThreadsToTrash batch=${batchNum} count=${threadsToTrash.length}`,
     );
     moveThreadsToTrash(threadsToTrash);
     endTimer(
       "INVITES",
       `moveThreadsToTrash batch=${batchNum}`,
-      trashStart
+      trashStart,
     );
 
     endTimer("INVITES", `Batch ${batchNum}`, batchStart);
@@ -264,13 +400,13 @@ function evaluateInviteThreadForDeletion(thread) {
 
   const getMessagesStart = startTimer(
     "INVITES",
-    `thread.getMessages() threadId=${thread.getId()}`
+    `thread.getMessages() threadId=${thread.getId()}`,
   );
   const messages = thread.getMessages();
   endTimer(
     "INVITES",
     `thread.getMessages() threadId=${thread.getId()} count=${messages.length}`,
-    getMessagesStart
+    getMessagesStart,
   );
 
   let hasInvite = false;
@@ -286,13 +422,13 @@ function evaluateInviteThreadForDeletion(thread) {
 
     const inviteStart = startTimer(
       "INVITES",
-      `getInviteInfoFromMessage msg ${m + 1}/${messages.length} threadId=${thread.getId()}`
+      `getInviteInfoFromMessage msg ${m + 1}/${messages.length} threadId=${thread.getId()}`,
     );
     const inviteInfo = getInviteInfoFromMessage(msg);
     endTimer(
       "INVITES",
       `getInviteInfoFromMessage msg ${m + 1}/${messages.length} threadId=${thread.getId()}`,
-      inviteStart
+      inviteStart,
     );
 
     if (inviteInfo.hasInvite) {
@@ -326,12 +462,12 @@ function getInviteInfoFromMessage(message) {
   const attachmentsStart = startTimer("INVITE_MSG", "message.getAttachments()");
   const attachments = message.getAttachments({
     includeInlineImages: false,
-    includeAttachments: true
+    includeAttachments: true,
   });
   endTimer(
     "INVITE_MSG",
     `message.getAttachments() count=${attachments.length}`,
-    attachmentsStart
+    attachmentsStart,
   );
 
   let latestEndDate = null;
@@ -341,7 +477,7 @@ function getInviteInfoFromMessage(message) {
     const attachment = attachments[a];
     const name = (attachment.getName() || "").toLowerCase();
 
-    if (!CONFIG.INVITE_EXTENSIONS.some(ext => name.endsWith(ext))) {
+    if (!CONFIG.INVITE_EXTENSIONS.some((ext) => name.endsWith(ext))) {
       continue;
     }
 
@@ -350,18 +486,18 @@ function getInviteInfoFromMessage(message) {
     try {
       const readStart = startTimer(
         "INVITE_MSG",
-        `attachment.getDataAsString() name=${name}`
+        `attachment.getDataAsString() name=${name}`,
       );
       const content = attachment.getDataAsString();
       endTimer(
         "INVITE_MSG",
         `attachment.getDataAsString() name=${name} bytes=${content.length}`,
-        readStart
+        readStart,
       );
 
       const parseStart = startTimer(
         "INVITE_MSG",
-        `parseInviteDates name=${name}`
+        `parseInviteDates name=${name}`,
       );
       const parsed = parseInviteDates(content);
       endTimer("INVITE_MSG", `parseInviteDates name=${name}`, parseStart);
@@ -375,14 +511,14 @@ function getInviteInfoFromMessage(message) {
     } catch (err) {
       logError(
         "INVITE_MSG",
-        `Could not parse invite attachment "${name}": ${err.message}`
+        `Could not parse invite attachment "${name}": ${err.message}`,
       );
     }
   }
 
   return {
     hasInvite: foundInvite,
-    endDate: latestEndDate
+    endDate: latestEndDate,
   };
 }
 
@@ -397,7 +533,7 @@ function parseInviteDates(icsText) {
 
   return {
     startDate: startDate,
-    endDate: endDate || startDate
+    endDate: endDate || startDate,
   };
 }
 
@@ -467,7 +603,7 @@ function cleanUpLabeledThreads() {
         deleted: 0,
         skipped: 0,
         failed: 1,
-        status: "Label Read Error"
+        status: "Label Read Error",
       });
       continue;
     }
@@ -479,7 +615,7 @@ function cleanUpLabeledThreads() {
         deleted: 0,
         skipped: 0,
         failed: 0,
-        status: "Label Not Found"
+        status: "Label Not Found",
       });
       continue;
     }
@@ -490,7 +626,7 @@ function cleanUpLabeledThreads() {
     endTimer(
       "LABELS",
       `search ${labelName} found=${threads.length}`,
-      searchStart
+      searchStart,
     );
 
     let deleted = 0;
@@ -506,7 +642,7 @@ function cleanUpLabeledThreads() {
 
       logVerbose(
         "LABELS",
-        `label=${labelName} batch=${batchNum} size=${batch.length}`
+        `label=${labelName} batch=${batchNum} size=${batch.length}`,
       );
 
       for (const thread of batch) {
@@ -521,20 +657,20 @@ function cleanUpLabeledThreads() {
           failed++;
           logError(
             "LABELS",
-            `label=${labelName} threadId=${thread.getId()} error=${err.message}`
+            `label=${labelName} threadId=${thread.getId()} error=${err.message}`,
           );
         }
       }
 
       const trashStart = startTimer(
         "LABELS",
-        `moveThreadsToTrash label=${labelName} batch=${batchNum} count=${threadsToTrash.length}`
+        `moveThreadsToTrash label=${labelName} batch=${batchNum} count=${threadsToTrash.length}`,
       );
       moveThreadsToTrash(threadsToTrash);
       endTimer(
         "LABELS",
         `moveThreadsToTrash label=${labelName} batch=${batchNum}`,
-        trashStart
+        trashStart,
       );
 
       deleted += threadsToTrash.length;
@@ -545,7 +681,7 @@ function cleanUpLabeledThreads() {
       deleted: deleted,
       skipped: skipped,
       failed: failed,
-      status: "Completed"
+      status: "Completed",
     });
 
     endTimer("LABELS", `label=${labelName}`, labelStart);
@@ -571,7 +707,7 @@ function archiveInbox() {
     skippedStarred: 0,
     skippedInvite: 0,
     skippedProtectedLabel: 0,
-    failed: 0
+    failed: 0,
   };
 
   for (let i = 0; i < threads.length; i += CONFIG.BATCH_SIZE) {
@@ -581,7 +717,7 @@ function archiveInbox() {
     const batch = threads.slice(i, i + CONFIG.BATCH_SIZE);
     const batchStart = startTimer(
       "ARCHIVE",
-      `Batch ${batchNum} (${batch.length} threads)`
+      `Batch ${batchNum} (${batch.length} threads)`,
     );
 
     const threadsToArchive = [];
@@ -594,7 +730,7 @@ function archiveInbox() {
           "ARCHIVE",
           j + 1,
           batch.length,
-          `threadId=${thread.getId()} batch=${batchNum}`
+          `threadId=${thread.getId()} batch=${batchNum}`,
         );
       }
 
@@ -606,13 +742,13 @@ function archiveInbox() {
 
         const protectedStart = startTimer(
           "ARCHIVE",
-          `threadHasProtectedArchiveLabel threadId=${thread.getId()}`
+          `threadHasProtectedArchiveLabel threadId=${thread.getId()}`,
         );
         if (threadHasProtectedArchiveLabel(thread)) {
           endTimer(
             "ARCHIVE",
             `threadHasProtectedArchiveLabel threadId=${thread.getId()} => true`,
-            protectedStart
+            protectedStart,
           );
           result.skippedProtectedLabel++;
           continue;
@@ -620,18 +756,18 @@ function archiveInbox() {
         endTimer(
           "ARCHIVE",
           `threadHasProtectedArchiveLabel threadId=${thread.getId()} => false`,
-          protectedStart
+          protectedStart,
         );
 
         const inviteStart = startTimer(
           "ARCHIVE",
-          `threadContainsInviteAttachment threadId=${thread.getId()}`
+          `threadContainsInviteAttachment threadId=${thread.getId()}`,
         );
         if (threadContainsInviteAttachment(thread)) {
           endTimer(
             "ARCHIVE",
             `threadContainsInviteAttachment threadId=${thread.getId()} => true`,
-            inviteStart
+            inviteStart,
           );
           result.skippedInvite++;
           continue;
@@ -639,7 +775,7 @@ function archiveInbox() {
         endTimer(
           "ARCHIVE",
           `threadContainsInviteAttachment threadId=${thread.getId()} => false`,
-          inviteStart
+          inviteStart,
         );
 
         threadsToArchive.push(thread);
@@ -647,20 +783,20 @@ function archiveInbox() {
         result.failed++;
         logError(
           "ARCHIVE",
-          `threadId=${thread.getId()} error=${err.message}`
+          `threadId=${thread.getId()} error=${err.message}`,
         );
       }
     }
 
     const archiveStart = startTimer(
       "ARCHIVE",
-      `moveThreadsToArchive batch=${batchNum} count=${threadsToArchive.length}`
+      `moveThreadsToArchive batch=${batchNum} count=${threadsToArchive.length}`,
     );
     moveThreadsToArchive(threadsToArchive);
     endTimer(
       "ARCHIVE",
       `moveThreadsToArchive batch=${batchNum}`,
-      archiveStart
+      archiveStart,
     );
 
     result.archived += threadsToArchive.length;
@@ -673,18 +809,20 @@ function archiveInbox() {
 }
 
 function threadHasProtectedArchiveLabel(thread) {
-  const protectedLabels = CONFIG.ARCHIVE_IGNORE_LABELS.map(l => l.toLowerCase());
+  const protectedLabels = CONFIG.ARCHIVE_IGNORE_LABELS.map((l) =>
+    l.toLowerCase(),
+  );
   const labels = [];
 
   const labelsReadStart = startTimer(
     "ARCHIVE",
-    `thread.getLabels() threadId=${thread.getId()}`
+    `thread.getLabels() threadId=${thread.getId()}`,
   );
   const threadLabels = thread.getLabels();
   endTimer(
     "ARCHIVE",
     `thread.getLabels() threadId=${thread.getId()} count=${threadLabels.length}`,
-    labelsReadStart
+    labelsReadStart,
   );
 
   for (const label of threadLabels) {
@@ -698,19 +836,19 @@ function threadHasProtectedArchiveLabel(thread) {
     }
   }
 
-  return labels.some(label => protectedLabels.includes(label));
+  return labels.some((label) => protectedLabels.includes(label));
 }
 
 function threadContainsInviteAttachment(thread) {
   const getMessagesStart = startTimer(
     "ARCHIVE",
-    `thread.getMessages() for invite scan threadId=${thread.getId()}`
+    `thread.getMessages() for invite scan threadId=${thread.getId()}`,
   );
   const messages = thread.getMessages();
   endTimer(
     "ARCHIVE",
     `thread.getMessages() for invite scan threadId=${thread.getId()} count=${messages.length}`,
-    getMessagesStart
+    getMessagesStart,
   );
 
   for (let m = 0; m < messages.length; m++) {
@@ -718,27 +856,285 @@ function threadContainsInviteAttachment(thread) {
 
     const attachStart = startTimer(
       "ARCHIVE",
-      `message.getAttachments() msg ${m + 1}/${messages.length} threadId=${thread.getId()}`
+      `message.getAttachments() msg ${m + 1}/${messages.length} threadId=${thread.getId()}`,
     );
     const attachments = msg.getAttachments({
       includeInlineImages: false,
-      includeAttachments: true
+      includeAttachments: true,
     });
     endTimer(
       "ARCHIVE",
       `message.getAttachments() msg ${m + 1}/${messages.length} threadId=${thread.getId()} count=${attachments.length}`,
-      attachStart
+      attachStart,
     );
 
     for (const attachment of attachments) {
       const name = (attachment.getName() || "").toLowerCase();
-      if (CONFIG.INVITE_EXTENSIONS.some(ext => name.endsWith(ext))) {
+      if (CONFIG.INVITE_EXTENSIONS.some((ext) => name.endsWith(ext))) {
         return true;
       }
     }
   }
 
   return false;
+}
+
+// --- No User Label Count ---
+
+function countNoUserLabelEmails() {
+  const fnStart = startTimer("NO_LABELS", "countNoUserLabelEmails");
+  const query = CONFIG.NO_USER_LABEL_QUERY || "has:nouserlabels";
+  const mode = String(CONFIG.NO_USER_LABEL_COUNT_MODE || "estimate").toLowerCase();
+
+  if (mode === "estimate") {
+    const apiReport = getNoUserLabelEstimateFromGmailApi(query);
+    if (apiReport) {
+      endTimer("NO_LABELS", "countNoUserLabelEmails", fnStart);
+      return apiReport;
+    }
+  }
+
+  if (mode === "exact") {
+    const exactReport = getNoUserLabelExactCount(query);
+    endTimer("NO_LABELS", "countNoUserLabelEmails", fnStart);
+    return exactReport;
+  }
+
+  const fallbackReport = getNoUserLabelFallbackCount(query);
+  endTimer("NO_LABELS", "countNoUserLabelEmails", fnStart);
+  return fallbackReport;
+}
+
+function getNoUserLabelFallbackCount(query) {
+  const batchSize = CONFIG.BATCH_SIZE || 100;
+  const maxThreads = CONFIG.NO_USER_LABEL_FALLBACK_MAX_THREADS || 500;
+  const countEmails = CONFIG.NO_USER_LABEL_FALLBACK_COUNT_EMAILS === true;
+  let start = 0;
+  let threadCount = 0;
+  let emailCount = countEmails ? 0 : null;
+  let failedThreads = 0;
+  let truncated = false;
+
+  while (threadCount < maxThreads) {
+    warnIfApproachingTimeout("NO_LABELS");
+    const remaining = maxThreads - threadCount;
+    const pageSize = Math.min(batchSize, remaining);
+
+    const searchStart = startTimer(
+      "NO_LABELS",
+      `GmailApp.search(${query}, ${start}, ${pageSize})`,
+    );
+    const threads = GmailApp.search(query, start, pageSize);
+    endTimer(
+      "NO_LABELS",
+      `GmailApp.search(${query}, ${start}, ${pageSize}) found=${threads.length}`,
+      searchStart,
+    );
+
+    if (!threads || threads.length === 0) {
+      break;
+    }
+
+    threadCount += threads.length;
+
+    for (let i = 0; i < threads.length; i++) {
+      const thread = threads[i];
+
+      if ((i + 1) % 25 === 0 || i === 0) {
+        logProgress(
+          "NO_LABELS",
+          i + 1,
+          threads.length,
+          `threadId=${thread.getId()} offset=${start}`,
+        );
+      }
+
+      if (countEmails) {
+        try {
+          emailCount += thread.getMessageCount();
+        } catch (err) {
+          failedThreads++;
+          logError(
+            "NO_LABELS",
+            `Could not count messages for thread ${thread.getId()}: ${err.message}`,
+          );
+        }
+      }
+    }
+
+    start += threads.length;
+
+    if (threads.length < pageSize) {
+      break;
+    }
+  }
+
+  if (threadCount >= maxThreads) {
+    truncated = true;
+  }
+
+  const report = {
+    query: query,
+    threadCount: threadCount,
+    emailCount: emailCount,
+    failedThreads: failedThreads,
+    method: countEmails ? "Fallback sample with email count" : "Fallback thread sample",
+    estimated: false,
+    truncated: truncated,
+    note: truncated
+      ? `Fallback stopped after ${maxThreads} threads. Enable Advanced Gmail service for a fast full estimate.`
+      : "Fallback completed without Advanced Gmail service.",
+  };
+
+  logVerbose("NO_LABELS", `No-user-label count complete: ${JSON.stringify(report)}`);
+  return report;
+}
+
+function getNoUserLabelEstimateFromGmailApi(query) {
+  if (typeof Gmail === "undefined" || !Gmail.Users) {
+    logVerbose("NO_LABELS", "Advanced Gmail service is not available.");
+    return null;
+  }
+
+  try {
+    const apiStart = startTimer("NO_LABELS", `Gmail API estimate query=${query}`);
+    const threadResponse = Gmail.Users.Threads.list("me", {
+      q: query,
+      maxResults: 1,
+    });
+    const messageResponse = Gmail.Users.Messages.list("me", {
+      q: query,
+      maxResults: 1,
+    });
+    endTimer("NO_LABELS", `Gmail API estimate query=${query}`, apiStart);
+
+    return {
+      query: query,
+      threadCount: threadResponse.resultSizeEstimate || 0,
+      emailCount: messageResponse.resultSizeEstimate || 0,
+      failedThreads: 0,
+      method: "Advanced Gmail service estimate",
+      estimated: true,
+      truncated: false,
+      note: "Fast estimate from Gmail API resultSizeEstimate.",
+    };
+  } catch (err) {
+    logError(
+      "NO_LABELS",
+      `Advanced Gmail service estimate failed, using fallback: ${err.message}`,
+    );
+    return null;
+  }
+}
+
+function getNoUserLabelExactCount(query) {
+  const apiReport = getNoUserLabelExactCountFromGmailApi(query);
+  if (apiReport) {
+    return apiReport;
+  }
+
+  const report = getNoUserLabelExactCountFromGmailApp(query);
+  logVerbose("NO_LABELS", `No-user-label exact count complete: ${JSON.stringify(report)}`);
+  return report;
+}
+
+function getNoUserLabelExactCountFromGmailApi(query) {
+  if (typeof Gmail === "undefined" || !Gmail.Users) {
+    logVerbose("NO_LABELS", "Advanced Gmail service is not available.");
+    return null;
+  }
+
+  try {
+    const apiStart = startTimer("NO_LABELS", `Gmail API exact count query=${query}`);
+    const threadCount = countGmailApiSearchResults(Gmail.Users.Threads, query, "threads");
+    const emailCount = countGmailApiSearchResults(Gmail.Users.Messages, query, "messages");
+    endTimer("NO_LABELS", `Gmail API exact count query=${query}`, apiStart);
+
+    return {
+      query: query,
+      threadCount: threadCount,
+      emailCount: emailCount,
+      failedThreads: 0,
+      method: "Advanced Gmail service exact count",
+      estimated: false,
+      truncated: false,
+      note: "Exact count from paginating Gmail API search results.",
+    };
+  } catch (err) {
+    logError(
+      "NO_LABELS",
+      `Advanced Gmail service exact count failed, using GmailApp exact scan: ${err.message}`,
+    );
+    return null;
+  }
+}
+
+function countGmailApiSearchResults(resource, query, resultKey) {
+  let pageToken = null;
+  let count = 0;
+
+  do {
+    warnIfApproachingTimeout("NO_LABELS");
+
+    const response = resource.list("me", {
+      q: query,
+      maxResults: 500,
+      pageToken: pageToken,
+    });
+    const results = response[resultKey] || [];
+    count += results.length;
+    pageToken = response.nextPageToken || null;
+  } while (pageToken);
+
+  return count;
+}
+
+function getNoUserLabelExactCountFromGmailApp(query) {
+  const batchSize = CONFIG.BATCH_SIZE || 100;
+  let start = 0;
+  let threadCount = 0;
+  let emailCount = 0;
+  let failedThreads = 0;
+
+  while (true) {
+    warnIfApproachingTimeout("NO_LABELS");
+
+    const threads = GmailApp.search(query, start, batchSize);
+    if (!threads || threads.length === 0) {
+      break;
+    }
+
+    threadCount += threads.length;
+
+    for (const thread of threads) {
+      try {
+        emailCount += thread.getMessageCount();
+      } catch (err) {
+        failedThreads++;
+        logError(
+          "NO_LABELS",
+          `Could not count messages for thread ${thread.getId()}: ${err.message}`,
+        );
+      }
+    }
+
+    start += threads.length;
+
+    if (threads.length < batchSize) {
+      break;
+    }
+  }
+
+  return {
+    query: query,
+    threadCount: threadCount,
+    emailCount: emailCount,
+    failedThreads: failedThreads,
+    method: "GmailApp exact scan",
+    estimated: false,
+    truncated: false,
+    note: "Exact count by scanning all matching GmailApp threads; this can be slow.",
+  };
 }
 
 // --- Audit / Reporting Helpers ---
@@ -753,20 +1149,22 @@ function auditMailbox() {
 
   const unlabeledStart = startTimer(
     "AUDIT",
-    "getUnlabeledInboxCountsByCategory"
+    "getUnlabeledInboxCountsByCategory",
   );
   const unlabeledByCategory = getUnlabeledInboxCountsByCategory();
   endTimer("AUDIT", "getUnlabeledInboxCountsByCategory", unlabeledStart);
 
-  const totalUnlabeledInboxThreads = Object.values(unlabeledByCategory)
-    .reduce((sum, count) => sum + count, 0);
+  const totalUnlabeledInboxThreads = Object.values(unlabeledByCategory).reduce(
+    (sum, count) => sum + count,
+    0,
+  );
 
   const report = {
     unruledLabels: labelAudit.unruledLabels,
     unruledLabelCount: labelAudit.unruledLabels.length,
     unreadableLabelCount: labelAudit.unreadableLabelCount,
     unlabeledByCategory: unlabeledByCategory,
-    totalUnlabeledInboxThreads: totalUnlabeledInboxThreads
+    totalUnlabeledInboxThreads: totalUnlabeledInboxThreads,
   };
 
   logVerbose("AUDIT", `Mailbox audit complete: ${JSON.stringify(report)}`);
@@ -780,7 +1178,7 @@ function getUnruledUserLabels() {
   endTimer(
     "AUDIT",
     `GmailApp.getUserLabels() count=${rawLabels.length}`,
-    labelsStart
+    labelsStart,
   );
 
   const allUserLabels = [];
@@ -803,17 +1201,17 @@ function getUnruledUserLabels() {
   allUserLabels.sort((a, b) => a.localeCompare(b));
 
   const ruledLabels = new Set([
-    ...CONFIG.LABELS_TO_DELETE.map(l => l.toLowerCase()),
-    ...CONFIG.ARCHIVE_IGNORE_LABELS.map(l => l.toLowerCase())
+    ...CONFIG.LABELS_TO_DELETE.map((l) => l.toLowerCase()),
+    ...CONFIG.ARCHIVE_IGNORE_LABELS.map((l) => l.toLowerCase()),
   ]);
 
   const unruledLabels = allUserLabels.filter(
-    labelName => !ruledLabels.has(labelName.toLowerCase())
+    (labelName) => !ruledLabels.has(labelName.toLowerCase()),
   );
 
   return {
     unruledLabels: unruledLabels,
-    unreadableLabelCount: unreadableLabelCount
+    unreadableLabelCount: unreadableLabelCount,
   };
 }
 
@@ -823,7 +1221,7 @@ function getUnlabeledInboxCountsByCategory() {
     Social: "in:inbox category:social",
     Promotions: "in:inbox category:promotions",
     Updates: "in:inbox category:updates",
-    Forums: "in:inbox category:forums"
+    Forums: "in:inbox category:forums",
   };
 
   const counts = {};
@@ -836,7 +1234,7 @@ function getUnlabeledInboxCountsByCategory() {
     endTimer(
       "AUDIT",
       `search category=${categoryName} found=${threads.length}`,
-      searchStart
+      searchStart,
     );
 
     let unlabeledCount = 0;
@@ -849,20 +1247,20 @@ function getUnlabeledInboxCountsByCategory() {
           "AUDIT",
           i + 1,
           threads.length,
-          `category=${categoryName} threadId=${thread.getId()}`
+          `category=${categoryName} threadId=${thread.getId()}`,
         );
       }
 
       try {
         const labelsStart = startTimer(
           "AUDIT",
-          `thread.getLabels() category=${categoryName} threadId=${thread.getId()}`
+          `thread.getLabels() category=${categoryName} threadId=${thread.getId()}`,
         );
         const labels = thread.getLabels();
         endTimer(
           "AUDIT",
           `thread.getLabels() category=${categoryName} threadId=${thread.getId()} count=${labels.length}`,
-          labelsStart
+          labelsStart,
         );
 
         if (!labels || labels.length === 0) {
@@ -871,7 +1269,7 @@ function getUnlabeledInboxCountsByCategory() {
       } catch (err) {
         logError(
           "AUDIT",
-          `Could not inspect labels for thread ${thread.getId()} in category "${categoryName}": ${err.message}`
+          `Could not inspect labels for thread ${thread.getId()} in category "${categoryName}": ${err.message}`,
         );
       }
     }
@@ -879,7 +1277,7 @@ function getUnlabeledInboxCountsByCategory() {
     counts[categoryName] = unlabeledCount;
     logVerbose(
       "AUDIT",
-      `category=${categoryName} unlabeledCount=${unlabeledCount}`
+      `category=${categoryName} unlabeledCount=${unlabeledCount}`,
     );
   }
 
@@ -896,9 +1294,9 @@ function getEmptyAuditReport() {
       Social: 0,
       Promotions: 0,
       Updates: 0,
-      Forums: 0
+      Forums: 0,
     },
-    totalUnlabeledInboxThreads: 0
+    totalUnlabeledInboxThreads: 0,
   };
 }
 
@@ -912,14 +1310,31 @@ function buildHtmlReport(data) {
     inviteReport,
     labelCleanupReport,
     archiveReport,
-    auditReport
+    noUserLabelReport,
+    auditReport,
   } = data;
 
   const isDryRun = CONFIG.DRY_RUN;
   const trashVerb = isDryRun ? "Would Delete" : "Deleted";
   const archiveVerb = isDryRun ? "Would Archive" : "Archived";
+  const noUserLabelQuery = noUserLabelReport.query || "has:nouserlabels";
+  const noUserLabelThreadCount = formatReportCount(noUserLabelReport.threadCount);
+  const noUserLabelEmailCount = formatReportCount(noUserLabelReport.emailCount);
+  const noUserLabelFailedThreads = formatReportCount(
+    noUserLabelReport.failedThreads,
+  );
+  const noUserLabelMethod = noUserLabelReport.method || "Unknown";
+  const noUserLabelNote = noUserLabelReport.note || "";
+  const reportTitle = CONFIG.PROJECT_VERSION
+    ? `${CONFIG.PROJECT_NAME} - ${CONFIG.PROJECT_VERSION}`
+    : CONFIG.PROJECT_NAME;
+  const footerLink = CONFIG.PROJECT_REPO_URL
+    ? ` &nbsp;|&nbsp; <a href="${escapeHtml(CONFIG.PROJECT_REPO_URL)}" target="_blank" style="color:#666;text-decoration:underline;">${escapeHtml(CONFIG.PROJECT_REPO_TEXT || CONFIG.PROJECT_REPO_URL)}</a>`
+    : "";
 
-  const labelRows = labelCleanupReport.map(r => `
+  const labelRows = labelCleanupReport
+    .map(
+      (r) => `
     <tr>
       <td>${escapeHtml(r.label)}</td>
       <td>${r.deleted}</td>
@@ -927,36 +1342,44 @@ function buildHtmlReport(data) {
       <td>${r.failed}</td>
       <td>${escapeHtml(r.status)}</td>
     </tr>
-  `).join("");
+  `,
+    )
+    .join("");
 
   const unruledLabelRows = auditReport.unruledLabels.length
-    ? auditReport.unruledLabels.map(label => `
+    ? auditReport.unruledLabels
+        .map(
+          (label) => `
         <tr>
           <td>${escapeHtml(label)}</td>
         </tr>
-      `).join("")
+      `,
+        )
+        .join("")
     : `
         <tr>
           <td>&#x2705; None</td>
         </tr>
       `;
 
-  const categoryRows = Object.entries(auditReport.unlabeledByCategory).map(([category, count]) => `
+  const categoryRows = Object.entries(auditReport.unlabeledByCategory)
+    .map(
+      ([category, count]) => `
     <tr>
       <td>${escapeHtml(category)}</td>
       <td>${count}</td>
     </tr>
-  `).join("");
-
-  const footerLink = CONFIG.PROJECT_REPO_URL
-    ? ` &nbsp;|&nbsp; <a href="${escapeHtml(CONFIG.PROJECT_REPO_URL)}" target="_blank" style="color:#666;text-decoration:underline;">${escapeHtml(CONFIG.PROJECT_REPO_TEXT || CONFIG.PROJECT_REPO_URL)}</a>`
-    : "";
+  `,
+    )
+    .join("");
 
   const auditSection = CONFIG.ENABLE_AUDIT
     ? `
         <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;margin-bottom:20px;width:100%;">
           <tr style="background:#f2f2f2;">
-            <th colspan="2" style="text-align:left;">&#x1F9ED; User Labels Audit</th>
+            <th colspan="2" style="text-align:left;">
+              &#x1F9ED; User Labels Audit
+            </th>
           </tr>
           <tr style="background:#f2f2f2;">
             <th>Item</th>
@@ -974,14 +1397,18 @@ function buildHtmlReport(data) {
 
         <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;margin-bottom:20px;width:100%;">
           <tr style="background:#f2f2f2;">
-            <th colspan="1" style="text-align:left;">&#x1F4CB; Unruled Labels</th>
+            <th colspan="1" style="text-align:left;">
+              &#x1F4CB; Unruled Labels
+            </th>
           </tr>
           ${unruledLabelRows}
         </table>
 
         <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;margin-bottom:20px;width:100%;">
           <tr style="background:#f2f2f2;">
-            <th colspan="2" style="text-align:left;">&#x1F4C2; Inbox Threads With No User Label by Gmail Category</th>
+            <th colspan="2" style="text-align:left;">
+              &#x1F4C2; Inbox Threads With No User Label by Gmail Category
+            </th>
           </tr>
           <tr style="background:#f2f2f2;">
             <th>&#x1F4C1; Category</th>
@@ -1002,7 +1429,7 @@ function buildHtmlReport(data) {
         <meta charset="UTF-8">
       </head>
       <body style="font-family:Arial,sans-serif;color:#333;line-height:1.4;">
-        <h2 style="margin-bottom:8px;">&#x1F9F9; ${escapeHtml(CONFIG.PROJECT_NAME)} - ${escapeHtml(CONFIG.PROJECT_VERSION)}</h2>
+        <h2 style="margin-bottom:8px;">&#x1F9F9; ${escapeHtml(reportTitle)}</h2>
 
         <p style="margin-top:0;">
           <strong>&#x1F552; Started:</strong> ${escapeHtml(startedAt)}<br>
@@ -1068,6 +1495,35 @@ function buildHtmlReport(data) {
           </tr>
         </table>
 
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;margin-bottom:20px;width:100%;">
+          <tr style="background:#f2f2f2;">
+            <th colspan="5" style="text-align:left;">&#x1F3F7;&#xFE0F; Emails With No User Label</th>
+          </tr>
+          <tr style="background:#f2f2f2;">
+            <th>&#x1F50D; Query</th>
+            <th>&#x1F9F5; Threads</th>
+            <th>&#x2709;&#xFE0F; Emails</th>
+            <th>&#x274C; Failed Threads</th>
+            <th>&#x2699;&#xFE0F; Method</th>
+          </tr>
+          <tr>
+            <td>${escapeHtml(noUserLabelQuery)}</td>
+            <td>${noUserLabelThreadCount}</td>
+            <td>${noUserLabelEmailCount}</td>
+            <td>${noUserLabelFailedThreads}</td>
+            <td>${escapeHtml(noUserLabelMethod)}</td>
+          </tr>
+          ${
+            noUserLabelNote
+              ? `
+          <tr style="background:#fafafa;">
+            <td colspan="5">${escapeHtml(noUserLabelNote)}</td>
+          </tr>
+        `
+              : ""
+          }
+        </table>
+
         ${auditSection}
 
         <p style="font-size:0.9em;color:#666;margin-top:20px;">
@@ -1099,7 +1555,7 @@ function moveThreadsToTrash(threads) {
 
     const start = startTimer(
       "MOVE",
-      `GmailApp.moveThreadsToTrash chunk=${chunkNum} count=${chunk.length}`
+      `GmailApp.moveThreadsToTrash chunk=${chunkNum} count=${chunk.length}`,
     );
 
     GmailApp.moveThreadsToTrash(chunk);
@@ -1107,7 +1563,7 @@ function moveThreadsToTrash(threads) {
     endTimer(
       "MOVE",
       `GmailApp.moveThreadsToTrash chunk=${chunkNum} count=${chunk.length}`,
-      start
+      start,
     );
   }
 }
@@ -1130,7 +1586,7 @@ function moveThreadsToArchive(threads) {
 
     const start = startTimer(
       "MOVE",
-      `GmailApp.moveThreadsToArchive chunk=${chunkNum} count=${chunk.length}`
+      `GmailApp.moveThreadsToArchive chunk=${chunkNum} count=${chunk.length}`,
     );
 
     GmailApp.moveThreadsToArchive(chunk);
@@ -1138,14 +1594,14 @@ function moveThreadsToArchive(threads) {
     endTimer(
       "MOVE",
       `GmailApp.moveThreadsToArchive chunk=${chunkNum} count=${chunk.length}`,
-      start
+      start,
     );
   }
 }
 
 function daysBetween(olderDate, newerDate) {
   return Math.floor(
-    (newerDate.getTime() - olderDate.getTime()) / (1000 * 60 * 60 * 24)
+    (newerDate.getTime() - olderDate.getTime()) / (1000 * 60 * 60 * 24),
   );
 }
 
@@ -1156,6 +1612,10 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function formatReportCount(value) {
+  return value === null || typeof value === "undefined" ? "Skipped" : value;
 }
 
 // --- Debug Helpers ---
@@ -1186,7 +1646,7 @@ function endTimer(section, detail, startMs) {
 function logProgress(section, index, total, extra) {
   if (!CONFIG.VERBOSE_LOGS) return;
   Logger.log(
-    `[${section}] Progress: ${index}/${total}${extra ? " | " + extra : ""}`
+    `[${section}] Progress: ${index}/${total}${extra ? " | " + extra : ""}`,
   );
 }
 
@@ -1194,7 +1654,7 @@ function warnIfApproachingTimeout(section) {
   const elapsed = Date.now() - SCRIPT_START_MS;
   if (elapsed > SOFT_TIMEOUT_MS) {
     Logger.log(
-      `[${section}] WARNING: script has been running ${elapsed} ms and may approach Apps Script execution limit.`
+      `[${section}] WARNING: script has been running ${elapsed} ms and may approach Apps Script execution limit.`,
     );
   }
 }

@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.0 - 2026-06-26
+
+GitHub issue: [#1](https://github.com/sansoo1972/gmailCleanUp/issues/1)
+
+### Added
+- `CONFIG_JSON` Script Property support for configuring the script with one pasted JSON object
+- `gmailCleanUp.config.example.json` as a generic configuration template
+- no-user-label reporting for threads and emails matching `has:nouserlabels`
+- configurable `NO_USER_LABEL_COUNT_MODE` with `estimate`, `exact`, and `fallback` modes
+- Advanced Gmail service support for fast no-label count estimates
+- optional exact no-label counting through paginated Gmail API/GmailApp scans
+
+### Changed
+- replaced hardcoded generic sample settings in `gmailCleanUp.gs` with generic defaults and Script Properties loading
+- moved runtime configuration guidance from in-code `CONFIG` editing to JSON-based Script Properties
+- updated README installation, configuration, performance, and Advanced Gmail service instructions
+- made report title, footer, subject prefix, and no-label query configurable
+
 ## 0.2.0 - 2026-04-16
 
 ### Added

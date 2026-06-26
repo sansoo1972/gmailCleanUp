@@ -1,0 +1,38 @@
+{
+  "LABELS_TO_DELETE": [
+    "subscriptions",
+    "promotions",
+    "notifications",
+    "orders"
+  ],
+  "DELETE_THRESHOLD_DAYS": 2,
+  "INVITE_READ_DELETE_DAYS": 2,
+  "ARCHIVE_THRESHOLD_DAYS": 10,
+  "BATCH_SIZE": 100,
+  "MOVE_BATCH_SIZE": 20,
+  "REPORT_RECIPIENT_EMAILS": [
+    "you@example.com"
+  ],
+  "ARCHIVE_IGNORE_LABELS": [
+    "personal",
+    "important",
+    "vip"
+  ],
+  "INVITE_EXTENSIONS": [
+    ".ics",
+    ".vcs"
+  ],
+  "DRY_RUN": true,
+  "VERBOSE_LOGS": false,
+  "ENABLE_AUDIT": false,
+  "NO_USER_LABEL_COUNT_MODE": "estimate",
+  "NO_USER_LABEL_QUERY": "has:nouserlabels",
+  "NO_USER_LABEL_FALLBACK_MAX_THREADS": 500,
+  "NO_USER_LABEL_FALLBACK_COUNT_EMAILS": false,
+  "PROJECT_NAME": "Gmail Cleanup Automation",
+  "PROJECT_VERSION": "0.3.0",
+  "PROJECT_COPYRIGHT": "",
+  "PROJECT_REPO_URL": "",
+  "PROJECT_REPO_TEXT": "Project Repository",
+  "REPORT_SUBJECT_PREFIX": "Gmail Cleanup Report"
+}
