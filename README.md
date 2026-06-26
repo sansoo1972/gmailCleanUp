@@ -24,6 +24,8 @@ The project is intentionally opinionated: if a thread is labeled for cleanup and
 - Verbose logging for troubleshooting and performance analysis
 - Smaller move batches to reduce Gmail mutation timeouts
 - HTML email report after each run
+- Count emails and threads with no user-created Gmail labels
+- Single-property JSON configuration through Apps Script Script Properties
 - Optional audit reporting for:
   - user labels that exist but do not match any rule
   - inbox threads with no user label by Gmail category
@@ -86,6 +88,7 @@ After cleanup, the script emails an HTML summary report showing:
 - invite cleanup results
 - label cleanup results
 - inbox archive results
+- no-user-label thread and email counts
 
 When `ENABLE_AUDIT` is turned on, the report can also show:
 
@@ -105,10 +108,10 @@ This project is intentionally aggressive, but it still has a few built-in guardr
 - Inbox archiving can ignore protected labels
 - Move operations are chunked using `MOVE_BATCH_SIZE` to reduce timeout risk
 
-If you are testing for the first time, start with:
+If you are testing for the first time, set this in your JSON config:
 
-```javascript
-DRY_RUN: true
+```json
+"DRY_RUN": true
 ```
 
 Then review the emailed report before turning live mode on.
@@ -120,6 +123,7 @@ Then review the emailed report before turning live mode on.
 - A Gmail account
 - Google Apps Script
 - Permission to access Gmail in Apps Script
+- Optional but recommended: Advanced Gmail service enabled for fast no-label count estimates
 
 No external services or libraries are required.
 
@@ -128,51 +132,82 @@ No external services or libraries are required.
 ## Installation
 
 1. Create a new Google Apps Script project.
-2. Paste in the contents of the script.
-3. Update the configuration section to match your Gmail labels and preferences.
-4. Save the project.
-5. Run `sendReportEmail()` manually once to authorize Gmail access.
-6. Review the report.
-7. Create a time-based trigger to run daily.
+2. Paste in the contents of `gmailCleanUp.gs`.
+3. Create a JSON config from `gmailCleanUp.config.example.json`.
+4. In Apps Script, open **Project Settings > Script properties**.
+5. Add one script property:
+   - Property: `CONFIG_JSON`
+   - Value: your full JSON config
+6. Save the project.
+7. Run `sendReportEmail()` manually once to authorize Gmail access.
+8. Review the report.
+9. Create a time-based trigger to run daily.
 
 ---
 
 ## Configuration
 
-The main behavior is controlled through the `CONFIG` object.
+The script keeps generic defaults in code and loads your runtime settings from Apps Script **Script Properties**.
 
-### Example
+The recommended setup is one property named `CONFIG_JSON` whose value is your full JSON configuration. This avoids adding each setting one row at a time in the Apps Script UI.
 
-```javascript
-const CONFIG = {
-  LABELS_TO_DELETE: [
-    "webads",
-    "customer service",
-    "travel"
+Individual Script Properties can still override values from `CONFIG_JSON` when needed. For example, you can set one property named `DRY_RUN` with value `false` without editing the JSON blob.
+
+### Create the JSON file
+
+Start from `gmailCleanUp.config.example.json`, then edit the values for your mailbox.
+
+Example:
+
+```json
+{
+  "LABELS_TO_DELETE": [
+    "subscriptions",
+    "promotions",
+    "orders"
   ],
-
-  DELETE_THRESHOLD_DAYS: 2,
-  INVITE_READ_DELETE_DAYS: 2,
-  ARCHIVE_THRESHOLD_DAYS: 10,
-  BATCH_SIZE: 100,
-  MOVE_BATCH_SIZE: 20,
-
-  REPORT_RECIPIENT_EMAILS: [
-    "your@email.com"
+  "DELETE_THRESHOLD_DAYS": 2,
+  "INVITE_READ_DELETE_DAYS": 2,
+  "ARCHIVE_THRESHOLD_DAYS": 10,
+  "BATCH_SIZE": 100,
+  "MOVE_BATCH_SIZE": 20,
+  "REPORT_RECIPIENT_EMAILS": [
+    "you@example.com"
   ],
-
-  ARCHIVE_IGNORE_LABELS: [
+  "ARCHIVE_IGNORE_LABELS": [
     "personal",
-    "important-client-label"
+    "important"
   ],
-
-  INVITE_EXTENSIONS: [".ics", ".vcs"],
-
-  DRY_RUN: true,
-  VERBOSE_LOGS: false,
-  ENABLE_AUDIT: true
-};
+  "INVITE_EXTENSIONS": [
+    ".ics",
+    ".vcs"
+  ],
+  "DRY_RUN": true,
+  "VERBOSE_LOGS": false,
+  "ENABLE_AUDIT": false,
+  "NO_USER_LABEL_COUNT_MODE": "estimate",
+  "NO_USER_LABEL_QUERY": "has:nouserlabels",
+  "NO_USER_LABEL_FALLBACK_MAX_THREADS": 500,
+  "NO_USER_LABEL_FALLBACK_COUNT_EMAILS": false,
+  "PROJECT_NAME": "Gmail Cleanup Automation",
+  "PROJECT_VERSION": "0.3.0",
+  "PROJECT_COPYRIGHT": "",
+  "PROJECT_REPO_URL": "",
+  "PROJECT_REPO_TEXT": "Project Repository",
+  "REPORT_SUBJECT_PREFIX": "Gmail Cleanup Report"
+}
 ```
+
+### Add the JSON to Apps Script
+
+1. Open your Apps Script project.
+2. Open **Project Settings**.
+3. Under **Script Properties**, click **Add script property**.
+4. Set **Property** to `CONFIG_JSON`.
+5. Paste the full JSON as the **Value**.
+6. Click **Save script properties**.
+
+Apps Script does not automatically read local `.json` files from this repo. The JSON file is a convenient source-of-truth that you paste into `CONFIG_JSON`.
 
 ### Configuration options
 
@@ -226,9 +261,33 @@ When `true`, the script logs detailed timing, batch progress, and step-by-step e
 
 When `true`, the script runs the heavier mailbox audit functions and includes the audit sections in the report. When `false`, those sections are skipped to reduce runtime.
 
+#### `NO_USER_LABEL_COUNT_MODE`
+
+Controls how the report counts threads and emails with no user-created Gmail labels.
+
+- `estimate`: fastest; uses the Advanced Gmail service `resultSizeEstimate`
+- `exact`: slower; paginates matching Gmail API/GmailApp results for exact counts
+- `fallback`: capped GmailApp scan using `NO_USER_LABEL_FALLBACK_MAX_THREADS`
+
+#### `NO_USER_LABEL_QUERY`
+
+Gmail search query used for the no-label count. The default is `has:nouserlabels`.
+
+#### `NO_USER_LABEL_FALLBACK_MAX_THREADS`
+
+Maximum threads to scan when `NO_USER_LABEL_COUNT_MODE` is `fallback` or when the fast Gmail API estimate is unavailable.
+
+#### `NO_USER_LABEL_FALLBACK_COUNT_EMAILS`
+
+When `true`, fallback mode calls `getMessageCount()` on scanned threads. This is more informative but slower.
+
 #### `PROJECT_NAME`, `PROJECT_VERSION`, `PROJECT_COPYRIGHT`, `PROJECT_REPO_URL`, `PROJECT_REPO_TEXT`
 
 Optional values used to customize the report header and footer.
+
+#### `REPORT_SUBJECT_PREFIX`
+
+Prefix used in the summary report email subject.
 
 ---
 
@@ -250,6 +309,22 @@ This function:
 
 ---
 
+## Advanced Gmail service
+
+`NO_USER_LABEL_COUNT_MODE: "estimate"` uses the Advanced Gmail service for a fast count estimate. To enable it:
+
+1. In Apps Script, open **Editor**.
+2. Next to **Services**, click **Add a service**.
+3. Select **Gmail API**.
+4. Keep the identifier as `Gmail`.
+5. Click **Add**.
+
+If the execution log says the Gmail API has not been used or is disabled, open the Google Cloud project link shown in the log and enable the Gmail API there too.
+
+If you do not enable the Advanced Gmail service, the script falls back to `GmailApp` counting behavior.
+
+---
+
 ## Recommended trigger
 
 Create a daily time-based trigger for:
@@ -266,7 +341,7 @@ A common setup is once each morning.
 
 A typical use case might look like this:
 
-- label low-value mail as `webads`, `political`, `travel`, `subscribed`, or `customer service`
+- label low-value mail as `subscriptions`, `promotions`, `notifications`, or `orders`
 - star anything you want to keep
 - let the script run daily
 - review the emailed report for:
@@ -330,21 +405,35 @@ A smaller value means:
 
 Audit is helpful, but it is also one of the more expensive parts of the script. If you want faster daily runs, disable audit and run it only when needed.
 
+### `NO_USER_LABEL_COUNT_MODE`
+
+The no-label count can be fast or exact:
+
+- `estimate` is best for daily runs. It uses the Advanced Gmail service and returns Gmail API estimates.
+- `exact` is useful for occasional manual checks, but can be slow on large mailboxes.
+- `fallback` limits the scan using `NO_USER_LABEL_FALLBACK_MAX_THREADS`.
+
 A practical daily-run setup is:
 
-```javascript
-DRY_RUN: false,
-VERBOSE_LOGS: false,
-ENABLE_AUDIT: false,
-MOVE_BATCH_SIZE: 20
+```json
+{
+  "DRY_RUN": false,
+  "VERBOSE_LOGS": false,
+  "ENABLE_AUDIT": false,
+  "NO_USER_LABEL_COUNT_MODE": "estimate",
+  "MOVE_BATCH_SIZE": 20
+}
 ```
 
 For debugging:
 
-```javascript
-DRY_RUN: true,
-VERBOSE_LOGS: true,
-ENABLE_AUDIT: true
+```json
+{
+  "DRY_RUN": true,
+  "VERBOSE_LOGS": true,
+  "ENABLE_AUDIT": true,
+  "NO_USER_LABEL_COUNT_MODE": "fallback"
+}
 ```
 
 ---
@@ -353,11 +442,12 @@ ENABLE_AUDIT: true
 
 At the moment, the project is a single Apps Script file, but logically it is organized into these parts:
 
-- **Configuration**
+- **Configuration loading**
 - **Entry point**
 - **Invite cleanup**
 - **Label cleanup**
 - **Inbox archive**
+- **No-user-label counting**
 - **Audit and reporting**
 - **Utility helpers**
 - **Debug and timing helpers**
@@ -372,6 +462,8 @@ A future version may split these into separate modules if the project grows.
 - Some calendar-related emails may not expose their event data in a parseable way
 - Date parsing handles common iCalendar formats, but not every possible edge case
 - Gmail category counts for unlabeled inbox mail can be slower on very large inboxes
+- No-user-label estimates are fast but approximate when using Gmail API `resultSizeEstimate`
+- Exact no-user-label counts can be slow on large mailboxes
 - Gmail mutation calls can still be slow in very large mailboxes, though chunked move operations help
 - This project assumes the user’s labels are meaningful cleanup rules; it does not try to infer importance
 
@@ -380,9 +472,11 @@ A future version may split these into separate modules if the project grows.
 ## Recommended best practices
 
 - Start with `DRY_RUN: true`
+- Use `CONFIG_JSON` for configuration instead of editing the script
 - Keep `LABELS_TO_DELETE` intentional and curated
 - Use starring as your override mechanism
 - Keep `ARCHIVE_IGNORE_LABELS` small and meaningful
+- Use `NO_USER_LABEL_COUNT_MODE: "estimate"` for normal daily runs
 - Review the report after the first few live runs
 - Add filters in Gmail to automatically apply labels upstream
 - Turn off `VERBOSE_LOGS` for normal daily operation
@@ -404,7 +498,7 @@ Potential future improvements:
 - better performance for very large inboxes
 - split scheduled jobs for cleanup vs. audit
 - GitHub Actions for linting and docs checks
-- sample config templates
+- more sample config templates
 
 ---
 
@@ -456,11 +550,12 @@ See the [LICENSE](LICENSE) file for details.
 
 - [ ] Create Apps Script project
 - [ ] Paste in script
-- [ ] Update config
-- [ ] Set `DRY_RUN: true`
+- [ ] Create JSON config from `gmailCleanUp.config.example.json`
+- [ ] Add `CONFIG_JSON` in Script Properties
+- [ ] Keep `"DRY_RUN": true`
 - [ ] Run `sendReportEmail()`
 - [ ] Review report
-- [ ] Set `DRY_RUN: false`
+- [ ] Set `"DRY_RUN": false`
 - [ ] Tune `MOVE_BATCH_SIZE` if needed
 - [ ] Disable `VERBOSE_LOGS` for normal runs
 - [ ] Add daily trigger
