@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.1 - 2026-06-26
+
+### Changed
+- updated the generic script, example configuration, and README to version `0.3.1`
+- expanded `.gitignore` to keep generated personal configuration profiles out of version control
+
 ## 0.3.0 - 2026-06-26
 
 GitHub issue: [#1](https://github.com/sansoo1972/gmailCleanUp/issues/1)

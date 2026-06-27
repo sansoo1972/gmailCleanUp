@@ -190,7 +190,7 @@ Example:
   "NO_USER_LABEL_FALLBACK_MAX_THREADS": 500,
   "NO_USER_LABEL_FALLBACK_COUNT_EMAILS": false,
   "PROJECT_NAME": "Gmail Cleanup Automation",
-  "PROJECT_VERSION": "0.3.0",
+  "PROJECT_VERSION": "0.3.1",
   "PROJECT_COPYRIGHT": "",
   "PROJECT_REPO_URL": "",
   "PROJECT_REPO_TEXT": "Project Repository",
